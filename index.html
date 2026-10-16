@@ -16,13 +16,14 @@ canvas{display:block;margin:0 auto}
 </style></head><body>
 <canvas id="c"></canvas>
 <div id="title" class="scr"><div class="box">📦🛋️📺</div><h1>STORAGE STACK</h1><h2>by Storage Auction Pirate</h2>
-<button class="btn" id="bPlay">PLAY</button><button class="btn" id="bHow">HOW TO PLAY</button></div>
+<button class="btn" id="bPlay">CLASSIC</button><button class="btn" id="bTwist" style="background:#7a3fb0;color:#f4e3c3">TWIST MODE<br><small style="font-size:12px">🔥 HARD MODE: every turn shifts the door colors</small></button><button class="btn" id="bHow">HOW TO PLAY</button></div>
 <div id="how" class="scr hide"><h1 style="font-size:28px">HOW TO PLAY</h1><ul>
 <li>Junk rolls in through the <b>garage door</b>. Stack it in the unit.</li>
 <li><b>Match by COLOR</b>, not by item. A red couch ≠ a blue couch.</li>
 <li>Fill a whole row with one color = <b>big payout</b>. Same item type too = bonus.</li>
 <li>4+ same color in a row side by side also clears for small cash.</li>
 <li><b>Phone:</b> tap = rotate, swipe ←/→ = move, swipe ↓ = drop. Tap the ◀ ▶ arrows beside a row or ▲ ▼ above/below a column to slide it (wraps around).</li>
+<li><b>TWIST MODE (hard):</b> each item has mixed door colors. Every rotate spins the colors around the item AND moves each one up the cycle red › orange › yellow › green › blue › red. The ↻ TWIST box shows what you'll get. Item pictures stay the same.</li>
 <li><b>Keys:</b> ←/→ move, ↑ rotate, ↓ soft drop, Space drop, P pause.</li>
 <li>Clear the goal lines to win the unit. Junk reaching the door = game over.</li></ul>
 <button class="btn" id="bGo">GOT IT</button></div>
@@ -41,13 +42,28 @@ const CONFIG = {
   startFallMs:900, minFallMs:180, speedupPerLine:25, speedupPerLevel:80,
   rowClearCash:100, typeBonusMult:2, runMin:4, runCashPerCell:10, levelBonus:250,
   slideCost:0,            // cash per row/col slide (0 = free)
+  // TWIST MODE (hard mode): each rotate spins door colors around the piece's cells and advances each one step
+  twistCycle:['red','orange','yellow','green','blue'], // fixed color cycle (wraps)
+  twistRingShift:true,    // colors also rotate one step around the piece's cells
+  twistAutoCycleMs:0,     // >0 = falling piece auto-advances colors every N ms (default off)
+  twistSpinMs:220,        // spin animation length
 };
-function create(canvas, hooks){
+function create(canvas, hooks){let twist=false;
   hooks=hooks||{};
   const ctx=canvas.getContext('2d');
   let S=null, cell=30, ox=0, oy=0, W=0,H=0, raf=0, last=0, acc=0, running=false, paused=false, flash=[], msg=null;
   function pickItem(){let tot=CONFIG.items.reduce((a,b)=>a+b.wt,0),r=Math.random()*tot;for(let i=0;i<CONFIG.items.length;i++){r-=CONFIG.items[i].wt;if(r<0)return i}return 0}
-  function newPiece(){const t=pickItem(),it=CONFIG.items[t];return {t,c:Math.floor(Math.random()*S.nColors),w:it.w,h:it.h,rot:0,x:0,y:0}}
+  function newPiece(){const t=pickItem(),it=CONFIG.items[t],c=Math.floor(Math.random()*S.nColors),cc=[];
+    for(let k=0;k<it.w*it.h;k++)cc.push(twist?Math.floor(Math.random()*S.nColors):c);return {t,c,cc,w:it.w,h:it.h,rot:0,x:0,y:0}}
+  function cyc(){return CONFIG.twistCycle.map(n=>CONFIG.colors.findIndex(c=>c.n===n)).filter(i=>i>=0&&i<S.nColors)}
+  function adv(c){const o=cyc(),i=o.indexOf(c);return i<0?c:o[(i+1)%o.length]}
+  function ring(w,h){const r=[];for(let i=0;i<w;i++)r.push(i);for(let j=1;j<h;j++)r.push(j*w+w-1);if(h>1)for(let i=w-2;i>=0;i--)r.push((h-1)*w+i);if(w>1)for(let j=h-2;j>0;j--)r.push(j*w);return r}
+  // colors after a twist: geometric rotate (if shape turns), ring shift, then advance in cycle
+  function twistColors(cc,w,h,turn){let n=cc.slice(),nw=w,nh=h;
+    if(turn){nw=h;nh=w;n=[];for(let j=0;j<nh;j++)for(let i=0;i<nw;i++)n.push(cc[(h-1-i)*w+j])}
+    if(CONFIG.twistRingShift&&n.length>1){const r=ring(nw,nh),o=n.slice();r.forEach((k,q)=>{n[r[(q+1)%r.length]]=o[k]})}
+    return n.map(adv)}
+  function doTwist(p,turn){p.cc=twistColors(p.cc,p.w,p.h,turn);p.spin=performance.now();if(turn){const t=p.w;p.w=p.h;p.h=t;p.rot^=1}}
   function startLevel(){
     const u=CONFIG.units[Math.floor(Math.random()*CONFIG.units.length)];
     S.unit=u; W=u.w; H=u.h; S.grid=Array.from({length:H},()=>Array(W).fill(null));
@@ -58,7 +74,7 @@ function create(canvas, hooks){
   function fits(p,x,y,w,h){for(let j=0;j<h;j++)for(let i=0;i<w;i++){const gx=x+i,gy=y+j;if(gx<0||gx>=W||gy>=H)return false;if(gy>=0&&S.grid[gy][gx])return false}return true}
   function spawn(){const p=S.next;S.next=newPiece();if(p.w>W){p.w=1}p.x=Math.floor((W-p.w)/2);p.y=-p.h+1;
     if(!fits(p,p.x,p.y,p.w,p.h)||!fits(p,p.x,0,p.w,Math.min(p.h,1))){S.cur=null;return gameOver()}S.cur=p}
-  function lock(){const p=S.cur;let over=false;for(let j=0;j<p.h;j++)for(let i=0;i<p.w;i++){const gy=p.y+j;if(gy<0){over=true;continue}S.grid[gy][p.x+i]={c:p.c,t:p.t}}
+  function lock(){const p=S.cur;let over=false;for(let j=0;j<p.h;j++)for(let i=0;i<p.w;i++){const gy=p.y+j;if(gy<0){over=true;continue}S.grid[gy][p.x+i]={c:p.cc[j*p.w+i],t:p.t}}
     if(over)return gameOver(); resolve(); if(running)spawn()}
   function gravity(){for(let x=0;x<W;x++){const col=[];for(let y=H-1;y>=0;y--)if(S.grid[y][x])col.push(S.grid[y][x]);for(let y=H-1,k=0;y>=0;y--,k++)S.grid[y][x]=col[k]||null}}
   function resolve(){let chain=0;for(;;){const kill=new Set();let gained=0,lines=0;
@@ -76,7 +92,7 @@ function create(canvas, hooks){
   function state(){return {cash:S.cash,level:S.level,lines:S.lines,totalLines:S.totalLines,unit:S.unit&&S.unit.label}}
   // actions
   function move(dx){const p=S.cur;if(p&&fits(p,p.x+dx,p.y,p.w,p.h))p.x+=dx}
-  function rotate(){const p=S.cur;if(!p||p.w===p.h)return;const w=p.h,h=p.w;for(const k of[0,-1,1,-2,2]){if(fits(p,p.x+k,p.y,w,h)){p.x+=k;p.w=w;p.h=h;p.rot^=1;return}}}
+  function rotate(){const p=S.cur;if(!p)return;if(p.w===p.h){if(twist)doTwist(p,false);return}const w=p.h,h=p.w;for(const k of[0,-1,1,-2,2]){if(fits(p,p.x+k,p.y,w,h)){p.x+=k;if(twist)doTwist(p,true);else{p.w=w;p.h=h;p.rot^=1}return}}}
   function soft(){const p=S.cur;if(!p)return;if(fits(p,p.x,p.y+1,p.w,p.h))p.y++;else lock();acc=0}
   function drop(){const p=S.cur;if(!p)return;while(fits(p,p.x,p.y+1,p.w,p.h))p.y++;lock();acc=0}
   function slideRow(y,d){if(y<0||y>=H)return;const r=S.grid[y];if(d>0)r.unshift(r.pop());else r.push(r.shift());S.cash-=CONFIG.slideCost;gravity();resolve();bumpCur()}
@@ -92,6 +108,13 @@ function create(canvas, hooks){
     ctx.fillStyle='rgba(255,255,255,.55)';rr(x+6,y+6,w-12,h-12,5);ctx.fill();
     ctx.font=Math.floor(Math.min(w,h)*.62)+'px serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(CONFIG.items[t].e,x+w/2,y+h/2+1);
     ctx.fillStyle=col;ctx.globalAlpha=(a||1)*.35;rr(x+6,y+6,w-12,h-12,5);ctx.fill();ctx.globalAlpha=1}
+  function drawTwist(p,x,y,cs,now,dots){const W2=p.w*cs,H2=p.h*cs,e=now-(p.spin||-1e9),sp=CONFIG.twistSpinMs;ctx.save();
+    if(e<sp){const k=e/sp;ctx.translate(x+W2/2,y+H2/2);ctx.rotate((1-k)*(1-k)*-Math.PI/2);const s=1+.18*Math.sin(k*Math.PI);ctx.scale(s,s);ctx.translate(-x-W2/2,-y-H2/2)}
+    for(let j=0;j<p.h;j++)for(let i=0;i<p.w;i++){const col=CONFIG.colors[p.cc[j*p.w+i]].h;ctx.fillStyle=col;rr(x+i*cs+2,y+j*cs+2,cs-4,cs-4,6);ctx.fill();ctx.strokeStyle='#2b2118';ctx.lineWidth=2;ctx.stroke();
+      ctx.fillStyle='rgba(255,255,255,.3)';ctx.fillRect(x+i*cs+5,y+j*cs+cs*.3,cs-10,2);ctx.fillRect(x+i*cs+5,y+j*cs+cs*.55,cs-10,2)}
+    ctx.font=Math.floor(Math.min(W2,H2)*.62)+'px serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(CONFIG.items[p.t].e,x+W2/2,y+H2/2+1);
+    if(e<sp){ctx.fillStyle='rgba(255,255,255,'+(.6*(1-e/sp))+')';rr(x,y,W2,H2,6);ctx.fill()}
+    ctx.restore()}
   function rr(x,y,w,h,r){ctx.beginPath();ctx.roundRect?ctx.roundRect(x,y,w,h,r):ctx.rect(x,y,w,h)}
   function arrows(){const a=[];const s=Math.min(30,cell);for(let y=0;y<H;y++){const cy=oy+y*cell+cell/2;a.push({x:ox-s-2,y:cy-s/2,w:s,h:s,k:'r',i:y,d:-1,g:'◀'},{x:ox+W*cell+2,y:cy-s/2,w:s,h:s,k:'r',i:y,d:1,g:'▶'})}
     for(let x=0;x<W;x++){const cx=ox+x*cell+cell/2;a.push({x:cx-s/2,y:oy+H*cell+2,w:s,h:s,k:'c',i:x,d:1,g:'▼'})}return a}
@@ -109,18 +132,21 @@ function create(canvas, hooks){
     ctx.fillStyle='#c33';ctx.fillRect(ox,oy-2,W*cell,2);
     // grid
     for(let y=0;y<H;y++)for(let x=0;x<W;x++){const g=S.grid[y][x];if(g)drawItem(g.t,g.c,ox+x*cell,oy+y*cell,cell,cell)}
-    const p=S.cur;if(p){ctx.save();ctx.beginPath();ctx.rect(ox,oy-10,W*cell,H*cell+10);ctx.clip();drawItem(p.t,p.c,ox+p.x*cell,oy+p.y*cell,p.w*cell,p.h*cell);ctx.restore()}
+    const p=S.cur;if(p){ctx.save();ctx.beginPath();ctx.rect(ox,oy-10,W*cell,H*cell+10);ctx.clip();if(twist)drawTwist(p,ox+p.x*cell,oy+p.y*cell,cell,now,true);else drawItem(p.t,p.c,ox+p.x*cell,oy+p.y*cell,p.w*cell,p.h*cell);ctx.restore()}
     flash=flash.filter(f=>now-f.t<350);flash.forEach(f=>{ctx.fillStyle='rgba(255,240,180,'+(1-(now-f.t)/350)+')';ctx.fillRect(ox+f.x*cell,oy+f.y*cell,cell,cell)});
     // arrows
     arrows().forEach(b=>{ctx.fillStyle='rgba(244,227,195,.85)';rr(b.x,b.y,b.w,b.h,5);ctx.fill();ctx.fillStyle='#2b2118';ctx.font=Math.floor(b.w*.55)+'px system-ui';ctx.textAlign='center';ctx.fillText(b.g,b.x+b.w/2,b.y+b.h/2+1)});
     // driveway strip
     const sy=vh-80;ctx.fillStyle='#55504a';ctx.fillRect(0,sy,vw,80);ctx.strokeStyle='#e8d48a';ctx.setLineDash([14,10]);ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(0,sy+70);ctx.lineTo(vw,sy+70);ctx.stroke();ctx.setLineDash([]);
     ctx.fillStyle='#f4e3c3';ctx.font='bold 13px system-ui';ctx.textAlign='left';ctx.fillText('NEXT UP THE DRIVEWAY ➜',10,sy+14);
-    const n=S.next,ns=22,bob=Math.sin(now/200)*2;ctx.font='34px serif';ctx.fillText('🛻',vw-100+bob,sy+44);drawItem(n.t,n.c,vw-150-n.w*ns,sy+52-n.h*ns,n.w*ns,n.h*ns);
-    ctx.fillStyle='#f4e3c3';ctx.font='12px system-ui';ctx.textAlign='left';ctx.fillText(CONFIG.colors[n.c].n+' '+CONFIG.items[n.t].n,10,sy+36);
+    const n=S.next,ns=22,bob=Math.sin(now/200)*2;ctx.font='34px serif';ctx.fillText('🛻',vw-100+bob,sy+44);if(twist)drawTwist(n,vw-150-n.w*ns,sy+52-n.h*ns,ns,now,false);else drawItem(n.t,n.c,vw-150-n.w*ns,sy+52-n.h*ns,n.w*ns,n.h*ns);
+    if(twist&&p){const turn=p.w!==p.h&&[0,-1,1,-2,2].some(k=>fits(p,p.x+k,p.y,p.h,p.w)),nc=twistColors(p.cc,p.w,p.h,turn),nw=turn?p.h:p.w,nh=turn?p.w:p.h,ms=11,px=vw-10-nw*ms,py=60;
+      ctx.fillStyle='rgba(0,0,0,.55)';rr(px-62,py-4,nw*ms+68,nh*ms+8,6);ctx.fill();ctx.fillStyle='#e8b04a';ctx.font='bold 11px system-ui';ctx.textAlign='left';ctx.fillText('↻ TWIST ➜',px-58,py+nh*ms/2);
+      for(let j=0;j<nh;j++)for(let i=0;i<nw;i++){ctx.fillStyle=CONFIG.colors[nc[j*nw+i]].h;ctx.fillRect(px+i*ms,py+j*ms,ms-1,ms-1)}}
+    ctx.fillStyle='#f4e3c3';ctx.font='12px system-ui';ctx.textAlign='left';ctx.fillText((twist?'mixed':CONFIG.colors[n.c].n)+' '+CONFIG.items[n.t].n,10,sy+36);if(twist){const o=cyc();ctx.font='bold 11px system-ui';ctx.fillText('TWIST:',10,sy+56);o.forEach((c,i)=>{ctx.fillStyle=CONFIG.colors[c].h;ctx.fillRect(56+i*22,sy+50,14,12);ctx.fillStyle='#f4e3c3';if(i<o.length-1)ctx.fillText('›',72+i*22,sy+56)})}
     if(msg&&now<msg.until){ctx.fillStyle='rgba(0,0,0,.6)';ctx.fillRect(0,oy+H*cell/2-24,vw,48);ctx.fillStyle='#e8b04a';ctx.font='bold 22px system-ui';ctx.textAlign='center';ctx.fillText(msg.t,vw/2,oy+H*cell/2)}
   }
-  function loop(now){raf=requestAnimationFrame(loop);if(!S)return;const dt=now-(last||now);last=now;if(running&&!paused){acc+=dt;if(acc>=fallMs()){acc=0;soft()}}draw(now)}
+  function loop(now){raf=requestAnimationFrame(loop);if(!S)return;const dt=now-(last||now);last=now;if(running&&!paused){acc+=dt;if(twist&&CONFIG.twistAutoCycleMs>0&&S.cur){S.auto=(S.auto||0)+dt;if(S.auto>=CONFIG.twistAutoCycleMs){S.auto=0;doTwist(S.cur,false)}}if(acc>=fallMs()){acc=0;soft()}}draw(now)}
   // input
   function hit(px,py){return arrows().find(b=>px>=b.x-4&&px<=b.x+b.w+4&&py>=b.y-4&&py<=b.y+b.h+4)}
   function tapAt(px,py){if(py<50&&px>canvas.width/(window.devicePixelRatio||1)-120){paused=!paused;return}if(!running||paused)return;const b=hit(px,py);if(b){b.k==='r'?slideRow(b.i,b.d):slideCol(b.i,b.d);return}rotate()}
@@ -133,8 +159,8 @@ function create(canvas, hooks){
   window.addEventListener('keydown',e=>{if(!running)return;const k=e.key;if(k==='p'||k==='P'){paused=!paused;return}if(paused)return;
     if(k==='ArrowLeft')move(-1);else if(k==='ArrowRight')move(1);else if(k==='ArrowUp')rotate();else if(k==='ArrowDown')soft();else if(k===' ')drop();else return;e.preventDefault()});
   window.addEventListener('resize',()=>S&&layout());
-  return {CONFIG,start(){S={cash:0,level:1,totalLines:0};running=true;paused=false;startLevel();if(!raf)raf=requestAnimationFrame(loop)},
-    state,move,rotate,soft,drop,slideRow,slideCol,_S:()=>S,pause(v){paused=v}};
+  return {CONFIG,start(mode){twist=mode==='twist';S={cash:0,level:1,totalLines:0};running=true;paused=false;startLevel();if(!raf)raf=requestAnimationFrame(loop)},
+    mode:()=>twist?'twist':'classic',state,move,rotate,soft,drop,slideRow,slideCol,_S:()=>S,pause(v){paused=v}};
 }
 return {CONFIG,create};
 })();
@@ -142,8 +168,9 @@ return {CONFIG,create};
 const $=id=>document.getElementById(id);
 const game=StorageStack.create($('c'),{onGameOver(s){$('oS').textContent='Cash $'+s.cash+' · Level '+s.level+' · '+s.totalLines+' lines';$('over').classList.remove('hide')}});
 window.game=game;
-$('bPlay').onclick=()=>{$('title').classList.add('hide');game.start()};
+let mode='classic';$('bPlay').onclick=()=>{mode='classic';$('title').classList.add('hide');game.start(mode)};
+$('bTwist').onclick=()=>{mode='twist';$('title').classList.add('hide');game.start(mode)};
 $('bHow').onclick=()=>{$('title').classList.add('hide');$('how').classList.remove('hide')};
-$('bGo').onclick=()=>{$('how').classList.add('hide');game.start()};
-$('bAgain').onclick=()=>{$('over').classList.add('hide');game.start()};
+$('bGo').onclick=()=>{$('how').classList.add('hide');game.start(mode)};
+$('bAgain').onclick=()=>{$('over').classList.add('hide');game.start(mode)};
 </script></body></html>
