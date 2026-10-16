@@ -18,3 +18,6 @@ colors, startColors, items (emoji, w, h, spawn weight), units, linesPerLevel, st
 - Should big items stay whole after landing (currently split into 1x1 cells)?
 - Column matches too? Real sprite art instead of emoji?
 - Do grid layouts stay when moving between units, or fresh unit each level (current)?
+
+## TWIST MODE (hard mode, v0.2)
+Title offers CLASSIC (unchanged) and TWIST MODE. In Twist, each cell of a piece has its own door color. Every rotate: shape turns, colors shift one step around the piece's cells (`twistRingShift`), and each advances one step in `twistCycle` red›orange›yellow›green›blue (only colors unlocked this level). Square pieces still twist colors. "↻ TWIST ➜" panel (top right) previews post-rotate colors; driveway shows the cycle. Spin + flash animation (`twistSpinMs`). `twistAutoCycleMs` (default 0 = off) auto-advances colors while falling. No sounds exist, so none added.
