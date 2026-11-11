@@ -46,7 +46,9 @@ canvas{display:block;margin:0 auto}
 <li><b>Rotate (tap / ↑):</b> the shape turns, and <b>every sticker flips to the next cube color at the same time</b> — white › yellow › red › orange › blue › green (then wraps). Use that to pick the color you want to match.</li>
 <li><b>Phone:</b> tap = rotate, swipe ←/→ = move, swipe ↓ = drop. Tap the ◀ ▶ arrows beside a row or ▲ ▼ above/below a column to slide it (wraps around).</li>
 <li><b>TWIST MODE (hard):</b> each item starts with mixed sticker colors. Rotate still flips every sticker to the next cube color at the same time, and turns the shape. The ↻ FLIP box shows what you'll get. Item pictures stay the same.</li>
-<li><b>Keys:</b> ←/→ move, ↑ rotate, ↓ soft drop, Space drop, P pause.</li>
+<li><b>Slides:</b> you only get 2 row/column slides at a time (the ⇄ SLIDE dots in the bar). They refill when you clear lines. A slide that doesn't clear still spends a charge and speeds the next drop. Slide to set up, then drop, for a combo bonus.</li>
+<li><b>Double drop</b> (higher levels, occasional): two pieces fall at once. Tap ⇄ SWITCH, the other piece, or S / Tab to control the other one. Rotate flips colors on both together.</li>
+<li><b>Keys:</b> ←/→ move, ↑ rotate, ↓ soft drop, Space drop, S / Tab switch, P pause.</li>
 <li>Clear the goal lines to win the unit. Junk reaching the door = game over.</li></ul>
 <button class="btn" id="bGo">GOT IT</button></div>
 <div id="over" class="scr hide"><h1 id="oT">UNIT FULL!</h1><div class="over-stats" id="oS"></div><div class="best" id="overBest"></div><button class="btn" id="bAgain">PLAY AGAIN</button></div>
@@ -56,14 +58,28 @@ const StorageStack = (function(){
 const CONFIG = {
   colors:[{n:'white',h:'#EDEAE0'},{n:'yellow',h:'#FFD500'},{n:'red',h:'#C41E3A'},{n:'orange',h:'#FF5800'},{n:'blue',h:'#0051BA'},{n:'green',h:'#009E60'}],
   startColors:3,          // colors in level 1; +1 per level up to 6
-  items:[ // w x h footprint
+  items:[ // w x h footprint; optional mask (1=cell, 0=hole) for non-rectangle junk
     {n:'box',e:'📦',w:1,h:1,wt:5},{n:'tv',e:'📺',w:2,h:1,wt:3},{n:'couch',e:'🛋️',w:3,h:1,wt:2},
-    {n:'fridge',e:'🧊',w:1,h:2,wt:2},{n:'dresser',e:'🗄️',w:2,h:2,wt:1}],
+    {n:'fridge',e:'🧊',w:1,h:2,wt:2},{n:'dresser',e:'🗄️',w:2,h:2,wt:1},
+    // U-shaped armchair (5 cells) and zigzag lounge / chaise (5 cells, long-S: left end up, right end down)
+    {n:'armchair',e:'🪑',w:3,h:2,wt:2,mask:[[1,1,1],[1,0,1]]},
+    {n:'lounge',e:'🛏️',w:3,h:3,wt:2,mask:[[1,0,0],[1,1,1],[0,0,1]]}],
   units:[{label:"5x10",w:5,h:9},{label:"10x10",w:8,h:8},{label:"10x20",w:8,h:11},{label:"10x30",w:9,h:12}],
   linesPerLevel:6,
   startFallMs:900, minFallMs:180, speedupPerLine:25, speedupPerLevel:80,
   rowClearCash:100, typeBonusMult:2, runMin:4, runCashPerCell:10, levelBonus:250,
-  slideCost:0,            // cash per row/col slide (0 = free)
+  slideCost:0,            // cash per row/col slide (0 = free; charges are the real limit)
+  slideMax:2,             // max slide charges on the meter
+  slideStart:2,           // charges at the start of a game/level
+  slideRechargeClear:1,   // +charges after a resolve that clears
+  slideRechargeCombo:1,   // extra charge when that resolve chains
+  slideClearMult:1.25,    // cash bonus when a slide itself clears
+  slideDropComboMult:1.5, // cash bonus when a drop/lock clears after a slide setup
+  slideMissHurry:0.45,    // wasted slide (no clear) adds this fraction of fallMs to acc
+  doubleFromLevel:3,      // double-drop event starts at this level
+  doubleChance:0.18,      // base chance per spawn at doubleFromLevel
+  doubleChancePerLevel:0.04,
+  doubleChanceCap:0.35,
   // TWIST MODE (hard mode): each rotate spins door colors around the piece's cells and advances each one step
   cubeCycle:['white','yellow','red','orange','blue','green'], // every rotate advances ALL stickers one step, together
   twistCycle:['white','yellow','red','orange','blue','green'],
@@ -80,15 +96,22 @@ function create(canvas, hooks){let twist=false;
   let S=null, cell=30, ox=0, oy=0, W=0,H=0, raf=0, last=0, acc=0, running=false, paused=false, flash=[], msg=null;
   let parts=[], pops=[], shake=0, bgPat=null, wallPat=null;
   function pickItem(){let tot=CONFIG.items.reduce((a,b)=>a+b.wt,0),r=Math.random()*tot;for(let i=0;i<CONFIG.items.length;i++){r-=CONFIG.items[i].wt;if(r<0)return i}return 0}
-  function newPiece(){const t=pickItem(),it=CONFIG.items[t],c=Math.floor(Math.random()*S.nColors),cc=[];
-    for(let k=0;k<it.w*it.h;k++)cc.push(twist?Math.floor(Math.random()*S.nColors):c);return {t,c,cc,w:it.w,h:it.h,rot:0,x:0,y:0}}
+  function solidMask(w,h){return Array.from({length:h},()=>Array(w).fill(1))}
+  function copyMask(m){return m.map(r=>r.slice())}
+  function itemMask(it){return it.mask?copyMask(it.mask):solidMask(it.w,it.h)}
+  function rotateMask(mask){const h=mask.length,w=mask[0].length,m=Array.from({length:w},()=>Array(h).fill(0));
+    for(let j=0;j<w;j++)for(let i=0;i<h;i++)m[j][i]=mask[h-1-i][j];return m}
+  function maskOf(p,w,h){return (p&&p.mask)?p.mask:solidMask(w!=null?w:p.w,h!=null?h:p.h)}
+  function newPiece(){const t=pickItem(),it=CONFIG.items[t],c=Math.floor(Math.random()*S.nColors),mask=itemMask(it),w=mask[0].length,h=mask.length,cc=[];
+    for(let k=0;k<w*h;k++)cc.push(twist?Math.floor(Math.random()*S.nColors):c);return {t,c,cc,w,h,mask,rot:0,x:0,y:0}}
   function cyc(){const seq=CONFIG.cubeCycle||CONFIG.twistCycle;return seq.map(n=>CONFIG.colors.findIndex(c=>c.n===n)).filter(i=>i>=0&&i<S.nColors)}
   function adv(c){const o=cyc(),i=o.indexOf(c);return i<0?c:o[(i+1)%o.length]}
   function ring(w,h){const r=[];for(let i=0;i<w;i++)r.push(i);for(let j=1;j<h;j++)r.push(j*w+w-1);if(h>1)for(let i=w-2;i>=0;i--)r.push((h-1)*w+i);if(w>1)for(let j=h-2;j>0;j--)r.push(j*w);return r}
   // 90° turn of the sticker map (shape only). Colors are advanced separately so every cell flips together.
   function remapTurn(cc,w,h){const n=[];for(let j=0;j<w;j++)for(let i=0;i<h;i++)n.push(cc[(h-1-i)*w+j]);return n}
-  function flipPiece(p,turn){if(turn){p.cc=remapTurn(p.cc,p.w,p.h);const t=p.w;p.w=p.h;p.h=t;p.rot^=1}p.prevCc=p.cc.slice();p.cc=p.cc.map(adv);p.c=p.cc[0];p.spin=performance.now()}
-  function previewFlip(p){const turn=p.w!==p.h&&[0,-1,1,-2,2].some(k=>fits(p,p.x+k,p.y,p.h,p.w));let cc=p.cc.slice(),w=p.w,h=p.h;if(turn){cc=remapTurn(cc,w,h);const t=w;w=h;h=t}return {cc:cc.map(adv),w,h}}
+  function flipPiece(p,turn){p.prevMask=copyMask(maskOf(p));if(turn){p.cc=remapTurn(p.cc,p.w,p.h);p.mask=rotateMask(maskOf(p));const t=p.w;p.w=p.h;p.h=t;p.rot=(p.rot+1)&3}p.prevCc=p.cc.slice();p.cc=p.cc.map(adv);p.c=p.cc[0];p.spin=performance.now()}
+  function previewFlip(p){const nm=rotateMask(maskOf(p)),nw=p.h,nh=p.w;const turn=[0,-1,1,-2,2].some(k=>fits(p,p.x+k,p.y,nw,nh,nm));
+    let cc=p.cc.slice(),w=p.w,h=p.h,mask=copyMask(maskOf(p));if(turn){cc=remapTurn(cc,w,h);w=nw;h=nh;mask=nm}return {cc:cc.map(adv),w,h,mask}}
   // kept for any leftover callers
   function twistColors(cc,w,h,turn){let n=turn?remapTurn(cc,w,h):cc.slice();return n.map(adv)}
   function doTwist(p,turn){flipPiece(p,turn)}
@@ -96,40 +119,70 @@ function create(canvas, hooks){let twist=false;
     const u=CONFIG.units[Math.floor(Math.random()*CONFIG.units.length)];
     S.unit=u; W=u.w; H=u.h; S.grid=Array.from({length:H},()=>Array(W).fill(null));
     S.lines=0; S.nColors=Math.min(CONFIG.colors.length,CONFIG.startColors+S.level-1);
-    S.next=newPiece(); spawn(); layout(); msg={t:'UNIT '+u.label+' — LEVEL '+S.level,until:performance.now()+1800};
+    S.mate=null; S.slides=CONFIG.slideStart; S.slideSetup=false;
+    S.next=newPiece(); spawn(); layout();
+    if(!(msg&&String(msg.t).indexOf('DOUBLE')>=0)) msg={t:'UNIT '+u.label+' — LEVEL '+S.level,until:performance.now()+1800};
   }
   function fallMs(){return Math.max(CONFIG.minFallMs,CONFIG.startFallMs-S.totalLines*CONFIG.speedupPerLine-(S.level-1)*CONFIG.speedupPerLevel)}
-  function fits(p,x,y,w,h){for(let j=0;j<h;j++)for(let i=0;i<w;i++){const gx=x+i,gy=y+j;if(gx<0||gx>=W||gy>=H)return false;if(gy>=0&&S.grid[gy][gx])return false}return true}
-  function spawn(){const p=S.next;S.next=newPiece();if(p.w>W){p.w=1}p.x=Math.floor((W-p.w)/2);p.y=-p.h+1;p.fx=p.x;p.fy=p.y;
-    if(!fits(p,p.x,p.y,p.w,p.h)||!fits(p,p.x,0,p.w,Math.min(p.h,1))){S.cur=null;return gameOver()}S.cur=p}
-  function lock(){const p=S.cur;let over=false;for(let j=0;j<p.h;j++)for(let i=0;i<p.w;i++){const gy=p.y+j;if(gy<0){over=true;continue}S.grid[gy][p.x+i]={c:p.cc[j*p.w+i],t:p.t}}
-    if(over)return gameOver(); resolve(); if(running)spawn()}
+  function occupies(p,gx,gy){if(!p)return false;const m=maskOf(p),i=gx-p.x,j=gy-p.y;return i>=0&&j>=0&&j<p.h&&i<p.w&&m[j]&&m[j][i]}
+  function otherHit(ignore,gx,gy){return (S.cur&&S.cur!==ignore&&occupies(S.cur,gx,gy))||(S.mate&&S.mate!==ignore&&occupies(S.mate,gx,gy))}
+  function fits(p,x,y,w,h,mask){mask=mask||maskOf(p,w,h);for(let j=0;j<h;j++)for(let i=0;i<w;i++){if(!mask[j]||!mask[j][i])continue;const gx=x+i,gy=y+j;if(gx<0||gx>=W||gy>=H)return false;if(gy>=0&&S.grid[gy][gx])return false;if(otherHit(p,gx,gy))return false}return true}
+  function wantDouble(){if(!S||S.level<(CONFIG.doubleFromLevel||3))return false;const ch=Math.min(CONFIG.doubleChanceCap||.35,(CONFIG.doubleChance||.18)+Math.max(0,S.level-CONFIG.doubleFromLevel)*(CONFIG.doubleChancePerLevel||0));return Math.random()<ch}
+  function placeDoor(p,x){p.x=x;p.y=-p.h+1;p.fx=p.x;p.fy=p.y}
+  function spawn(){S.mate=null;const p=S.next;S.next=newPiece();if(p.w>W){S.cur=null;return gameOver()}
+    if(wantDouble()){const b=newPiece(),gap=(p.w+b.w+1<=W)?1:(p.w+b.w<=W?0:-1);
+      if(gap>=0){const x0=Math.max(0,Math.floor((W-p.w-gap-b.w)/2));placeDoor(p,x0);placeDoor(b,x0+p.w+gap);
+        S.cur=p;S.mate=b;
+        if(fits(p,p.x,p.y,p.w,p.h)&&fits(b,b.x,b.y,b.w,b.h)&&fits(p,p.x,0,p.w,p.h)&&fits(b,b.x,0,b.w,b.h)){msg={t:'DOUBLE DROP!  Tap ⇄ SWITCH',until:performance.now()+1400};return}
+        S.mate=null}}
+    placeDoor(p,Math.floor((W-p.w)/2));
+    if(!fits(p,p.x,p.y,p.w,p.h)||!fits(p,p.x,0,p.w,p.h)){S.cur=null;return gameOver()}S.cur=p}
+  function lockOne(p){if(!p)return;const m=maskOf(p);let over=false;for(let j=0;j<p.h;j++)for(let i=0;i<p.w;i++){if(!m[j][i])continue;const gy=p.y+j;if(gy<0){over=true;continue}S.grid[gy][p.x+i]={c:p.cc[j*p.w+i],t:p.t}}
+    if(p===S.cur){S.cur=S.mate;S.mate=null}else if(p===S.mate)S.mate=null;
+    if(over)return gameOver();resolve('lock');if(running&&!S.cur&&!S.mate)spawn()}
+  function lock(){lockOne(S.cur)}
   function gravity(){for(let x=0;x<W;x++){const col=[];for(let y=H-1;y>=0;y--)if(S.grid[y][x])col.push(S.grid[y][x]);for(let y=H-1,k=0;y>=0;y--,k++)S.grid[y][x]=col[k]||null}}
   function burst(x,y,c,n){const col=CONFIG.colors[c]&&CONFIG.colors[c].h||'#fff';for(let i=0;i<n;i++){const a=Math.random()*Math.PI*2,v=40+Math.random()*90;parts.push({x:ox+(x+.5)*cell,y:oy+(y+.5)*cell,vx:Math.cos(a)*v,vy:Math.sin(a)*v-30,c:col,t:0,life:.35+Math.random()*.25,r:2+Math.random()*3})}}
-  function resolve(){let chain=0;for(;;){const kill=new Set();let gained=0,lines=0;
+  function resolve(src){let chain=0,cleared=false;for(;;){const kill=new Set();let gained=0,lines=0;
       for(let y=0;y<H;y++){const r=S.grid[y];
         if(r.every(c=>c&&c.c===r[0].c)){lines++;let v=CONFIG.rowClearCash*W/5;if(r.every(c=>c.t===r[0].t))v*=CONFIG.typeBonusMult;gained+=v;for(let x=0;x<W;x++)kill.add(y*W+x);continue}
         let x=0;while(x<W){if(!r[x]){x++;continue}let e=x;while(e+1<W&&r[e+1]&&r[e+1].c===r[x].c)e++;const n=e-x+1;if(n>=CONFIG.runMin){lines++;gained+=n*CONFIG.runCashPerCell;for(let k=x;k<=e;k++)kill.add(y*W+k)}x=e+1}}
-      if(!kill.size)break; chain++;
+      if(!kill.size)break; chain++; cleared=true;
       kill.forEach(k=>{const y=Math.floor(k/W),x=k%W;flash.push({x,y,c:S.grid[y][x].c,t:performance.now()});burst(x,y,S.grid[y][x].c,8);S.grid[y][x]=null});
-      S.cash+=gained*chain; S.lines+=lines; S.totalLines+=lines; gravity();
+      let pay=gained*chain,tag='';
+      if(src==='slide'){pay*=(CONFIG.slideClearMult||1);tag=chain>1?'SLIDE CHAIN x'+chain:'SLIDE CLEAR'}
+      else if(src==='lock'&&S.slideSetup){pay*=(CONFIG.slideDropComboMult||1);tag=chain>1?'SLIDE COMBO x'+chain:'SLIDE COMBO'}
+      S.cash+=pay; S.lines+=lines; S.totalLines+=lines; gravity();
       shake=Math.min(14,6+chain*3);
-      pops.push({t:(chain>1?'CHAIN x'+chain+'  ':'')+'+$'+Math.round(gained*chain),x:ox+W*cell/2,y:oy+H*cell/2,life:.7,age:0});
-      if(chain>1)msg={t:'CHAIN x'+chain+'!',until:performance.now()+900};
+      pops.push({t:(tag?tag+'  ':'')+(chain>1&&!tag?'CHAIN x'+chain+'  ':'')+'+$'+Math.round(pay),x:ox+W*cell/2,y:oy+H*cell/2,life:.7,age:0});
+      if(tag)msg={t:tag+'!',until:performance.now()+900};else if(chain>1)msg={t:'CHAIN x'+chain+'!',until:performance.now()+900};
     }
+    if(cleared){S.slides=Math.min(CONFIG.slideMax,(S.slides||0)+(CONFIG.slideRechargeClear||1)+((chain>1)?(CONFIG.slideRechargeCombo||0):0));if(src==='lock')S.slideSetup=false}
     if(S.lines>=CONFIG.linesPerLevel){S.cash+=CONFIG.levelBonus*S.level;S.level++;startLevel()}
     hooks.onUpdate&&hooks.onUpdate(state())}
   function gameOver(){running=false;hooks.onGameOver&&hooks.onGameOver(state())}
-  function state(){return {cash:S.cash,level:S.level,lines:S.lines,totalLines:S.totalLines,unit:S.unit&&S.unit.label}}
+  function state(){return {cash:S.cash,level:S.level,lines:S.lines,totalLines:S.totalLines,unit:S.unit&&S.unit.label,slides:S&&S.slides}}
   // actions
   function move(dx){const p=S.cur;if(p&&fits(p,p.x+dx,p.y,p.w,p.h))p.x+=dx}
-  function rotate(){const p=S.cur;if(!p)return;if(p.w===p.h){flipPiece(p,false);return}const w=p.h,h=p.w;for(const k of[0,-1,1,-2,2]){if(fits(p,p.x+k,p.y,w,h)){p.x+=k;flipPiece(p,true);return}}flipPiece(p,false)}
-  function soft(){const p=S.cur;if(!p)return;if(fits(p,p.x,p.y+1,p.w,p.h))p.y++;else lock();acc=0}
-  function drop(){const p=S.cur;if(!p)return;while(fits(p,p.x,p.y+1,p.w,p.h))p.y++;if(p)p.fy=p.y;lock();acc=0}
-  function slideRow(y,d){if(y<0||y>=H)return;const r=S.grid[y];if(d>0)r.unshift(r.pop());else r.push(r.shift());S.cash-=CONFIG.slideCost;gravity();resolve();bumpCur()}
+  function rotate(){const p=S.cur;if(!p)return;const m=rotateMask(maskOf(p)),w=p.h,h=p.w;let turned=false;
+    for(const k of[0,-1,1,-2,2]){if(fits(p,p.x+k,p.y,w,h,m)){p.x+=k;flipPiece(p,true);turned=true;break}}
+    if(!turned)flipPiece(p,false);if(S.mate)flipPiece(S.mate,false)}
+  function tryDown(p){if(!p)return;if(fits(p,p.x,p.y+1,p.w,p.h))p.y++;else lockOne(p)}
+  function tickFall(){const list=[S.cur,S.mate].filter(Boolean).sort((a,b)=>(b.y+b.h)-(a.y+a.h));for(const p of list){if(p===S.cur||p===S.mate)tryDown(p)}acc=0}
+  function soft(){const p=S.cur;if(!p)return;if(fits(p,p.x,p.y+1,p.w,p.h))p.y++;else lockOne(p);acc=0}
+  function drop(){const p=S.cur;if(!p)return;while(fits(p,p.x,p.y+1,p.w,p.h))p.y++;if(p)p.fy=p.y;lockOne(p);acc=0}
+  function switchPiece(){if(!S||!S.mate||!S.cur)return;const t=S.cur;S.cur=S.mate;S.mate=t}
+  function slideRow(y,d){if(y<0||y>=H)return;const r=S.grid[y];if(r.every(c=>!c))return;if(!(S.slides>0)){S.slideFlash=performance.now();return}
+    if(d>0)r.unshift(r.pop());else r.push(r.shift());S.slides--;const lines0=S.lines;gravity();resolve('slide');S.slideSetup=true;
+    if(S.lines===lines0)acc=Math.min(fallMs()-16,acc+fallMs()*(CONFIG.slideMissHurry||.45));bumpAll()}
   function slideCol(x,d){if(x<0||x>=W)return;const col=[];for(let y=0;y<H;y++)if(S.grid[y][x])col.push(S.grid[y][x]);if(col.length<2)return;
-    if(d>0)col.unshift(col.pop());else col.push(col.shift());let k=0;for(let y=H-col.length;y<H;y++)S.grid[y][x]=col[k++];S.cash-=CONFIG.slideCost;resolve();bumpCur()}
-  function bumpCur(){const p=S.cur;if(p)while(!fits(p,p.x,p.y,p.w,p.h)&&p.y>-p.h)p.y--}
+    if(!(S.slides>0)){S.slideFlash=performance.now();return}
+    if(d>0)col.unshift(col.pop());else col.push(col.shift());let k=0;for(let y=0;y<H;y++)S.grid[y][x]=null;for(let y=H-col.length;y<H;y++)S.grid[y][x]=col[k++];
+    S.slides--;const lines0=S.lines;gravity();resolve('slide');S.slideSetup=true;
+    if(S.lines===lines0)acc=Math.min(fallMs()-16,acc+fallMs()*(CONFIG.slideMissHurry||.45));bumpAll()}
+  function bumpCur(){bumpAll()}
+  function bumpAll(){for(const p of[S.cur,S.mate])if(p)while(!fits(p,p.x,p.y,p.w,p.h)&&p.y>-p.h)p.y--}
+
   // layout & draw
   function layout(){const dpr=window.devicePixelRatio||1,vw=window.innerWidth,vh=window.innerHeight;canvas.style.width=vw+'px';canvas.style.height=vh+'px';canvas.width=vw*dpr;canvas.height=vh*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);
     const hud=56,door=34,strip=90,pad=34,tab=document.getElementById('arcadeHome'),tabW=tab?36:0;cell=Math.floor(Math.min((vw-2*pad-tabW)/W,(vh-hud-door-strip-2*pad)/H));ox=Math.max(tabW+Math.min(30,cell)+6,Math.floor((vw-cell*W)/2));oy=hud+door+pad}
@@ -214,6 +267,27 @@ function create(canvas, hooks){let twist=false;
         ctx.fillStyle=inkFill(light);rr(x+w*0.08,y+h*0.16,w*0.84,h*0.68,2);ctx.fill();ctx.stroke();
         ctx.fillStyle=ink(light);rr(cx-w*0.18,cy-h*0.055,w*0.36,Math.max(2,h*0.1),1);ctx.fill();}
       else{rr(x+w*0.1,y,w*0.8,h,2);ctx.stroke();ctx.beginPath();ctx.moveTo(x+w*0.1,cy);ctx.lineTo(x+w*0.9,cy);ctx.stroke();ctx.fillStyle=ink(light);rr(cx-w*0.1,y+h*0.2,w*0.2,h*0.07,1);ctx.fill();rr(cx-w*0.1,y+h*0.62,w*0.2,h*0.07,1);ctx.fill();}}
+    else if(it==='armchair'){
+      const role=block||'back'; // 'back' | 'armL' | 'armR' | 'arm'
+      if(fill){
+        if(role==='armL'||role==='armR'||role==='arm'){const left=role!=='armR';
+          rr(left?x:x+w*0.62,y,w*0.38,h,Math.max(2,w*0.12));ctx.fill();ctx.stroke();
+          rr(x,y+h*0.62,w,h*0.38,Math.max(2,w*0.12));ctx.fill();ctx.stroke();}
+        else{rr(x,y,w,h*0.78,Math.max(2,w*0.14));ctx.fill();ctx.stroke();
+          ctx.fillStyle=ink(light);ctx.beginPath();ctx.arc(cx,cy-h*0.06,Math.max(1.2,w*0.055),0,7);ctx.fill();}}
+      else{rr(x,y,w,h*0.45,2);ctx.stroke();ctx.fill();rr(x,y+h*0.45,w*0.28,h*0.5,2);ctx.stroke();ctx.fill();rr(x+w*0.72,y+h*0.45,w*0.28,h*0.5,2);ctx.stroke();ctx.fill();}}
+    else if(it==='lounge'){
+      const role=block||'seat'; // 'head' | 'seat' | 'foot'
+      if(fill){
+        if(role==='head'){rr(x+w*0.08,y,w*0.84,h*0.7,Math.max(2,w*0.16));ctx.fill();ctx.stroke();
+          rr(x,y+h*0.55,w,h*0.4,Math.max(2,w*0.12));ctx.fill();ctx.stroke();}
+        else if(role==='foot'){rr(x,y+h*0.2,w,h*0.55,Math.max(2,w*0.12));ctx.fill();ctx.stroke();
+          ctx.fillStyle=ink(light);ctx.fillRect(x+w*0.15,y+h*0.78,w*0.2,h*0.16);ctx.fillRect(x+w*0.65,y+h*0.78,w*0.2,h*0.16);}
+        else{rr(x,y+h*0.22,w,h*0.58,Math.max(2,w*0.12));ctx.fill();ctx.stroke();
+          ctx.fillStyle=ink(light);ctx.beginPath();ctx.arc(cx,cy+h*0.04,Math.max(1.2,w*0.055),0,7);ctx.fill();}}
+      else{ // small side-view chaise: back, seat, foot
+        ctx.beginPath();ctx.moveTo(x+w*0.08,y+h*0.15);ctx.lineTo(x+w*0.28,y+h*0.55);ctx.lineTo(x+w*0.78,y+h*0.55);ctx.lineTo(x+w*0.95,y+h*0.8);ctx.stroke();
+        rr(x+w*0.22,y+h*0.48,w*0.5,h*0.22,2);ctx.fill();}}
     else{ // box / crate — lid flap + short packing-tape seal, not a full-height cross
       if(fill){rr(x,y,w,h,2);ctx.stroke();
         ctx.beginPath();ctx.moveTo(x,y+h*0.3);ctx.lineTo(x+w,y+h*0.3);ctx.moveTo(cx,y+h*0.3);ctx.lineTo(cx,y+h);ctx.stroke();
@@ -230,23 +304,71 @@ function create(canvas, hooks){let twist=false;
     if(hw>=vh&&hw>1)return {seg:gx-x0,n:hw,vert:false};
     if(vh>1)return {seg:gy-y0,n:vh,vert:true};
     return {seg:0,n:1,vert:false}}
-  function drawPiece(t,cc,x,y,cols,rows,cs,a,gxy){const colors=Array.isArray(cc)?cc:Array(cols*rows).fill(cc);
-    if(look==='A'){for(let j=0;j<rows;j++)for(let i=0;i<cols;i++)drawSticker(colors[j*cols+i],x+i*cs,y+j*cs,cs,a);
+  // Role of a cell inside a U-armchair or zigzag-lounge mask (and rotations).
+  function cellRole(name,i,j,mask){if(!mask||!mask[j]||!mask[j][i])return null;
+    const h=mask.length,w=mask[0].length,filled=(x,y)=>!!(mask[y]&&mask[y][x]);
+    if(name==='armchair'){
+      const holes=[];for(let y=0;y<h;y++)for(let x=0;x<w;x++)if(!filled(x,y))holes.push({x,y});
+      if(holes.length===1){const ho=holes[0],arms=[];
+        for(const [dx,dy] of[[-1,0],[1,0],[0,-1],[0,1]]){const ax=ho.x+dx,ay=ho.y+dy;if(filled(ax,ay))arms.push({x:ax,y:ay})}
+        const isArm=arms.some(a=>a.x===i&&a.y===j);
+        if(!isArm)return 'back';
+        if(arms.length===2){const a=arms[0],b=arms[1];const left=a.x<b.x||(a.x===b.x&&a.y<b.y)?a:b;return (i===left.x&&j===left.y)?'armL':'armR'}
+        return 'arm'}
+      return 'back'}
+    if(name==='lounge'){
+      // 3-in-a-row is the seat; stubs off opposite ends are head (upper/left) and foot.
+      let bar=null;
+      for(let y=0;y<h;y++){let run=0,s=0;for(let x=0;x<=w;x++){const on=x<w&&filled(x,y);if(on){if(!run)s=x;run++}else{if(run>=3)bar={dir:'h',y,x0:s,x1:s+run-1};run=0}}}
+      if(!bar){for(let x=0;x<w;x++){let run=0,s=0;for(let y=0;y<=h;y++){const on=y<h&&filled(x,y);if(on){if(!run)s=y;run++}else{if(run>=3)bar={dir:'v',x,y0:s,y1:s+run-1};run=0}}}}
+      if(!bar)return 'seat';
+      const onBar=bar.dir==='h'?j===bar.y&&i>=bar.x0&&i<=bar.x1:i===bar.x&&j>=bar.y0&&j<=bar.y1;
+      if(!onBar){
+        // stub: classify by which end of the bar it attaches to
+        const nearLeft=bar.dir==='h'?(Math.abs(i-bar.x0)<=Math.abs(i-bar.x1)):(Math.abs(j-bar.y0)<=Math.abs(j-bar.y1));
+        // head = the "start" stub that sits opposite the foot; prefer the visually upper stub as head when one is above
+        return nearLeft?'head':'foot'}
+      return 'seat'}
+    return null}
+  function matchMask(t,c,gx,gy){
+    const it=CONFIG.items[t];if(!it||!it.mask||gx==null||gy==null||!S||!S.grid)return null;
+    const same=(x,y)=>S.grid[y]&&S.grid[y][x]&&S.grid[y][x].t===t&&S.grid[y][x].c===c;
+    let m=copyMask(it.mask);
+    for(let r=0;r<4;r++){const h=m.length,w=m[0].length;
+      for(let oy=gy-h+1;oy<=gy;oy++)for(let ox=gx-w+1;ox<=gx;ox++){
+        if(ox<0||oy<0||ox+w>W||oy+h>H)continue;
+        let ok=true,covers=false;
+        for(let j=0;j<h&&ok;j++)for(let i=0;i<w&&ok;i++){
+          const hit=same(ox+i,oy+j);
+          if(m[j][i]){if(!hit)ok=false;if(ox+i===gx&&oy+j===gy)covers=true}
+          else if(hit)ok=false}
+        if(ok&&covers)return {mask:m,i:gx-ox,j:gy-oy,role:cellRole(it.n,gx-ox,gy-oy,m)}}
+      m=rotateMask(m)}
+    return null}
+  function drawPiece(t,cc,x,y,cols,rows,cs,a,gxy,mask){
+    mask=mask||(CONFIG.items[t]&&CONFIG.items[t].mask&&cols===CONFIG.items[t].w&&rows===CONFIG.items[t].h?CONFIG.items[t].mask:solidMask(cols,rows));
+    const colors=Array.isArray(cc)?cc:Array(cols*rows).fill(cc),name=CONFIG.items[t]&&CONFIG.items[t].n;
+    if(look==='A'){for(let j=0;j<rows;j++)for(let i=0;i<cols;i++){if(mask[j]&&mask[j][i])drawSticker(colors[j*cols+i],x+i*cs,y+j*cs,cs,a)}
       ctx.globalAlpha=a||1;ctx.font=Math.floor(Math.min(cols,rows)*cs*.58)+'px serif';ctx.textAlign='center';ctx.textBaseline='middle';
       ctx.shadowColor='rgba(0,0,0,.55)';ctx.shadowBlur=4;ctx.fillText(CONFIG.items[t].e,x+cols*cs/2,y+rows*cs/2+1);ctx.shadowBlur=0;ctx.globalAlpha=1;return}
     for(let j=0;j<rows;j++)for(let i=0;i<cols;i++){
+      if(!mask[j]||!mask[j][i])continue;
       const st=drawCubeSticker(colors[j*cols+i],x+i*cs,y+j*cs,cs,a);
       if(look==='C')continue;
       let seg,nseg,vert=false,block=false;
-      if(cols*rows>1){seg=j*cols+i;nseg=cols*rows;vert=rows>cols;block=cols>1&&rows>1;}
-      else{const r=runSeg(t,colors[0],gxy&&gxy.x,gxy&&gxy.y);seg=r.seg;nseg=r.n;vert=!!r.vert;block=!!r.block;}
+      const role=cellRole(name,i,j,mask);
+      if(role){block=role;seg=0;nseg=1}
+      else if(cols*rows>1){seg=j*cols+i;nseg=cols*rows;vert=rows>cols;block=cols>1&&rows>1;}
+      else{const hit=matchMask(t,colors[0],gxy&&gxy.x,gxy&&gxy.y);
+        if(hit&&hit.role){block=hit.role;seg=0;nseg=1}
+        else{const r=runSeg(t,colors[0],gxy&&gxy.x,gxy&&gxy.y);seg=r.seg;nseg=r.n;vert=!!r.vert;block=!!r.block;}}
       drawMark(t,seg,nseg,st.ix,st.iy,st.iw,st.ih,st.light,look==='B'?'fill':'small',vert,block);
     }}
   function drawItem(t,c,x,y,w,h,a){const cs=(!w||!h)?cell:(w<=32||h<=32?Math.min(w,h):cell);const cols=Math.max(1,Math.round(w/cs)||1),rows=Math.max(1,Math.round(h/cs)||1);drawPiece(t,c,x,y,cols,rows,w/cols,a)}
   function drawTwist(p,x,y,cs,now){const W2=p.w*cs,H2=p.h*cs,e=now-(p.spin||-1e9),sp=CONFIG.flipMs||CONFIG.twistSpinMs||240;ctx.save();
-    let cc=p.cc;
-    if(e<sp){const k=Math.max(0,Math.min(1,e/sp));ctx.translate(x+W2/2,y+H2/2);ctx.scale(Math.max(.08,Math.abs(Math.cos(k*Math.PI))),1+.06*Math.sin(k*Math.PI));ctx.translate(-x-W2/2,-y-H2/2);if(k<.5&&p.prevCc)cc=p.prevCc}
-    drawPiece(p.t,cc,x,y,p.w,p.h,cs,1);
+    let cc=p.cc,mask=maskOf(p);
+    if(e<sp){const k=Math.max(0,Math.min(1,e/sp));ctx.translate(x+W2/2,y+H2/2);ctx.scale(Math.max(.08,Math.abs(Math.cos(k*Math.PI))),1+.06*Math.sin(k*Math.PI));ctx.translate(-x-W2/2,-y-H2/2);if(k<.5&&p.prevCc){cc=p.prevCc;if(p.prevMask)mask=p.prevMask}}
+    drawPiece(p.t,cc,x,y,p.w,p.h,cs,1,null,mask);
     if(e<sp){const k=Math.max(0,Math.min(1,e/sp));ctx.fillStyle='rgba(255,255,255,'+(0.55*Math.sin(k*Math.PI))+')';rr(x,y,W2,H2,6);ctx.fill()}
     ctx.restore()}
   function rr(x,y,w,h,r){ctx.beginPath();ctx.roundRect?ctx.roundRect(x,y,w,h,r):ctx.rect(x,y,w,h)}
@@ -265,6 +387,13 @@ function create(canvas, hooks){let twist=false;
     const bestC=+(localStorage.getItem('sstack_best')||0);
     ctx.textAlign='right';ctx.fillStyle='#ffd23f';ctx.font='800 15px system-ui';ctx.fillText('LINES  '+S.lines+'/'+CONFIG.linesPerLevel,vw-12,16);
     ctx.fillStyle='#c9a27a';ctx.font='700 12px system-ui';ctx.fillText((paused?'PAUSED':'BEST $'+bestC)+'   ⏸',vw-12,36);
+    // slide charge meter (center of HUD)
+    ctx.textAlign='center';ctx.fillStyle=(S.slides>0)?'#ffd23f':'#c9a27a';ctx.font='800 10px system-ui';
+    const flashSl=S.slideFlash&&now-S.slideFlash<420;if(flashSl)ctx.fillStyle='#ff6b4a';
+    ctx.fillText('⇄ SLIDE',vw/2,15);
+    const smax=CONFIG.slideMax||2,snow=S.slides||0,pip=11,gap=5,tw=smax*pip+(smax-1)*gap;let spx=vw/2-tw/2;
+    for(let i=0;i<smax;i++){rr(spx+i*(pip+gap),24,pip,11,3);if(i<snow){ctx.fillStyle='#ffd23f';ctx.fill();ctx.strokeStyle='#fff2a8';ctx.lineWidth=1;ctx.stroke()}
+      else{ctx.fillStyle='rgba(0,0,0,.45)';ctx.fill();ctx.strokeStyle=flashSl?'#ff6b4a':'rgba(244,227,195,.4)';ctx.lineWidth=1.2;ctx.stroke()}}
     // warehouse walls + cube body around the grid
     corrugated(ox-10,oy-44,W*cell+20,H*cell+54);
     ctx.fillStyle='#0d0d0d';rr(ox-5,oy-5,W*cell+10,H*cell+10,6);ctx.fill();
@@ -278,30 +407,44 @@ function create(canvas, hooks){let twist=false;
     ctx.fillStyle='#C41E3A';ctx.fillRect(ox-2,oy-6,W*cell+4,4);
     // grid stickers
     for(let y=0;y<H;y++)for(let x=0;x<W;x++){const g=S.grid[y][x];if(g)drawPiece(g.t,g.c,ox+x*cell,oy+y*cell,1,1,cell,1,{x,y})}
-    const p=S.cur;if(p){if(p.fx==null)p.fx=p.x;if(p.fy==null)p.fy=p.y;p.fx+=(p.x-p.fx)*.55;p.fy+=(p.y-p.fy)*.55;if(Math.abs(p.fx-p.x)<.02)p.fx=p.x;if(Math.abs(p.fy-p.y)<.02)p.fy=p.y;
-      ctx.save();ctx.beginPath();ctx.rect(ox,oy-10,W*cell,H*cell+10);ctx.clip();drawTwist(p,ox+p.fx*cell,oy+p.fy*cell,cell,now);ctx.restore()}
+    function lerpPiece(q){if(!q)return;if(q.fx==null)q.fx=q.x;if(q.fy==null)q.fy=q.y;q.fx+=(q.x-q.fx)*.55;q.fy+=(q.y-q.fy)*.55;if(Math.abs(q.fx-q.x)<.02)q.fx=q.x;if(Math.abs(q.fy-q.y)<.02)q.fy=q.y}
+    lerpPiece(S.mate);lerpPiece(S.cur);
+    const p=S.cur;
+    ctx.save();ctx.beginPath();ctx.rect(ox,oy-10,W*cell,H*cell+10);ctx.clip();
+    if(S.mate){ctx.globalAlpha=.88;drawTwist(S.mate,ox+S.mate.fx*cell,oy+S.mate.fy*cell,cell,now);ctx.globalAlpha=1}
+    if(p)drawTwist(p,ox+p.fx*cell,oy+p.fy*cell,cell,now);
+    if(p&&S.mate){const m=maskOf(p),pulse=0.7+0.3*Math.sin(now/160);ctx.strokeStyle='#ffd23f';ctx.lineWidth=2.6;ctx.shadowColor='rgba(255,210,63,.85)';ctx.shadowBlur=10;ctx.globalAlpha=pulse;
+      for(let j=0;j<p.h;j++)for(let i=0;i<p.w;i++){if(!m[j]||!m[j][i])continue;rr(ox+(p.fx+i)*cell+1.5,oy+(p.fy+j)*cell+1.5,cell-3,cell-3,4);ctx.stroke()}
+      ctx.shadowBlur=0;ctx.globalAlpha=1;ctx.fillStyle='#ffd23f';ctx.font='800 10px system-ui';ctx.textAlign='center';ctx.textBaseline='bottom';
+      ctx.fillText('ACTIVE',ox+(p.fx+p.w/2)*cell,oy+p.fy*cell-3)}
+    ctx.restore();
     flash=flash.filter(f=>now-f.t<280);flash.forEach(f=>{const k=1-(now-f.t)/280,col=CONFIG.colors[f.c]?CONFIG.colors[f.c].h:'#fff';ctx.globalAlpha=k;ctx.fillStyle='#fff8d0';ctx.fillRect(ox+f.x*cell,oy+f.y*cell,cell,cell);ctx.strokeStyle=col;ctx.lineWidth=3;ctx.strokeRect(ox+f.x*cell+2,oy+f.y*cell+2,cell-4,cell-4);ctx.globalAlpha=1});
     // particles
     const pdt=dt/1000;parts=parts.filter(q=>{q.t+=pdt;q.x+=q.vx*pdt;q.y+=q.vy*pdt;q.vy+=220*pdt;if(q.t>=q.life)return false;ctx.globalAlpha=1-q.t/q.life;ctx.fillStyle=q.c;ctx.fillRect(q.x-q.r/2,q.y-q.r/2,q.r,q.r);ctx.globalAlpha=1;return true});
     pops=pops.filter(q=>{q.age+=pdt;if(q.age>=q.life)return false;ctx.globalAlpha=1-q.age/q.life;ctx.fillStyle='#ffd23f';ctx.font='800 22px system-ui';ctx.textAlign='center';ctx.fillText(q.t,q.x,q.y-q.age*40);ctx.globalAlpha=1;return true});
-    // arrows
-    arrows().forEach(b=>{const ag=ctx.createLinearGradient(b.x,b.y,b.x,b.y+b.h);ag.addColorStop(0,'#f4e3c3');ag.addColorStop(1,'#c9a27a');ctx.fillStyle=ag;rr(b.x,b.y,b.w,b.h,5);ctx.fill();ctx.strokeStyle='rgba(0,0,0,.4)';ctx.lineWidth=1;ctx.stroke();ctx.fillStyle='#1a1410';ctx.font='800 '+Math.floor(b.w*.55)+'px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(b.g,b.x+b.w/2,b.y+b.h/2+1)});
+    // arrows (dimmed when the slide meter is empty)
+    arrows().forEach(b=>{ctx.save();ctx.globalAlpha=(S.slides>0)?1:0.32;const ag=ctx.createLinearGradient(b.x,b.y,b.x,b.y+b.h);ag.addColorStop(0,'#f4e3c3');ag.addColorStop(1,'#c9a27a');ctx.fillStyle=ag;rr(b.x,b.y,b.w,b.h,5);ctx.fill();ctx.strokeStyle='rgba(0,0,0,.4)';ctx.lineWidth=1;ctx.stroke();ctx.fillStyle='#1a1410';ctx.font='800 '+Math.floor(b.w*.55)+'px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(b.g,b.x+b.w/2,b.y+b.h/2+1);ctx.restore()});
+    const sw=switchBtn(vw);if(sw){const g=ctx.createLinearGradient(sw.x,sw.y,sw.x,sw.y+sw.h);g.addColorStop(0,'#ffd23f');g.addColorStop(1,'#e0a428');ctx.fillStyle=g;rr(sw.x,sw.y,sw.w,sw.h,7);ctx.fill();ctx.strokeStyle='#1a1410';ctx.lineWidth=1.5;ctx.stroke();ctx.fillStyle='#1a1410';ctx.font='800 12px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(sw.label,sw.x+sw.w/2,sw.y+sw.h/2+0.5)}
     // driveway strip
     const sy=vh-80;ctx.fillStyle='#3a3732';ctx.fillRect(0,sy,vw,80);ctx.fillStyle='rgba(0,0,0,.2)';for(let i=0;i<vw;i+=18)ctx.fillRect(i,sy,1,80);
     ctx.strokeStyle='#e8d48a';ctx.setLineDash([14,10]);ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(0,sy+70);ctx.lineTo(vw,sy+70);ctx.stroke();ctx.setLineDash([]);
     ctx.fillStyle='#ffd23f';ctx.font='800 13px system-ui';ctx.textAlign='left';ctx.fillText('NEXT UP THE DRIVEWAY ➜',10,sy+16);
-    const n=S.next,ns=22,bob=Math.sin(now/200)*2;ctx.font='34px serif';ctx.fillText('🛻',vw-100+bob,sy+44);if(twist)drawTwist(n,vw-150-n.w*ns,sy+52-n.h*ns,ns,now);else drawPiece(n.t,n.cc,vw-150-n.w*ns,sy+52-n.h*ns,n.w,n.h,ns,1);
+    const n=S.next,ns=22,bob=Math.sin(now/200)*2;ctx.font='34px serif';ctx.fillText('🛻',vw-100+bob,sy+44);if(twist)drawTwist(n,vw-150-n.w*ns,sy+52-n.h*ns,ns,now);else drawPiece(n.t,n.cc,vw-150-n.w*ns,sy+52-n.h*ns,n.w,n.h,ns,1,null,n.mask);
     if(p){const pv=previewFlip(p),nc=pv.cc,nw=pv.w,nh=pv.h,ms=11,px=vw-10-nw*ms,py=60;
       ctx.fillStyle='rgba(0,0,0,.62)';rr(px-62,py-4,nw*ms+68,nh*ms+8,6);ctx.fill();ctx.fillStyle='#ffd23f';ctx.font='800 11px system-ui';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText('↻ FLIP ➜',px-58,py+nh*ms/2);
-      for(let j=0;j<nh;j++)for(let i=0;i<nw;i++)drawSticker(nc[j*nw+i],px+i*ms,py+j*ms,ms,1)}
+      const pm=pv.mask||solidMask(nw,nh);for(let j=0;j<nh;j++)for(let i=0;i<nw;i++)if(pm[j][i])drawSticker(nc[j*nw+i],px+i*ms,py+j*ms,ms,1)}
     ctx.fillStyle='#f4e3c3';ctx.font='12px system-ui';ctx.textAlign='left';ctx.textBaseline='alphabetic';ctx.fillText((twist?'mixed':CONFIG.colors[n.c].n)+' '+CONFIG.items[n.t].n,10,sy+36);{const o=cyc();ctx.font='800 11px system-ui';ctx.fillStyle='#f4e3c3';ctx.fillText('FLIP:',10,sy+56);o.forEach((c,i)=>{drawSticker(c,52+i*20,sy+46,15,1);ctx.fillStyle='#f4e3c3';if(i<o.length-1)ctx.fillText('›',68+i*20,sy+58)})}
     if(msg&&now<msg.until){ctx.fillStyle='rgba(0,0,0,.65)';ctx.fillRect(0,oy+H*cell/2-24,vw,48);ctx.fillStyle='#ffd23f';ctx.font='800 22px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(msg.t,vw/2,oy+H*cell/2)}
     if(sh>0)ctx.restore();
   }
-  function loop(now){raf=requestAnimationFrame(loop);if(!S)return;const dt=now-(last||now);last=now;if(running&&!paused){acc+=dt;if(twist&&CONFIG.twistAutoCycleMs>0&&S.cur){S.auto=(S.auto||0)+dt;if(S.auto>=CONFIG.twistAutoCycleMs){S.auto=0;doTwist(S.cur,false)}}if(acc>=fallMs()){acc=0;soft()}}draw(now)}
+  function loop(now){raf=requestAnimationFrame(loop);if(!S)return;const dt=now-(last||now);last=now;if(running&&!paused){acc+=dt;if(twist&&CONFIG.twistAutoCycleMs>0&&S.cur){S.auto=(S.auto||0)+dt;if(S.auto>=CONFIG.twistAutoCycleMs){S.auto=0;doTwist(S.cur,false)}}if(acc>=fallMs()){acc=0;tickFall()}}draw(now)}
   // input
+  function switchBtn(vw){if(!S||!S.mate)return null;vw=vw||(canvas.width/(window.devicePixelRatio||1));return {x:10,y:56,w:108,h:26,label:'⇄ SWITCH'}}
   function hit(px,py){return arrows().find(b=>px>=b.x-4&&px<=b.x+b.w+4&&py>=b.y-4&&py<=b.y+b.h+4)}
-  function tapAt(px,py){if(py<50&&px>canvas.width/(window.devicePixelRatio||1)-120){paused=!paused;return}if(!running||paused)return;const b=hit(px,py);if(b){b.k==='r'?slideRow(b.i,b.d):slideCol(b.i,b.d);return}rotate()}
+  function tapAt(px,py){const vw=canvas.width/(window.devicePixelRatio||1);if(py<50&&px>vw-120){paused=!paused;return}if(!running||paused)return;
+    const sw=switchBtn(vw);if(sw&&px>=sw.x&&px<=sw.x+sw.w&&py>=sw.y&&py<=sw.y+sw.h){switchPiece();return}
+    const gx=Math.floor((px-ox)/cell),gy=Math.floor((py-oy)/cell);if(S.mate&&occupies(S.mate,gx,gy)){switchPiece();return}
+    const b=hit(px,py);if(b){b.k==='r'?slideRow(b.i,b.d):slideCol(b.i,b.d);return}rotate()}
   let ts=null;
   canvas.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];ts={x:t.clientX,y:t.clientY,lx:t.clientX,t:performance.now(),moved:false}},{passive:false});
   canvas.addEventListener('touchmove',e=>{e.preventDefault();if(!ts||!running)return;const t=e.touches[0];const dx=t.clientX-ts.lx;if(Math.abs(dx)>cell*0.8){move(dx>0?1:-1);ts.lx=t.clientX;ts.moved=true}},{passive:false});
@@ -309,10 +452,10 @@ function create(canvas, hooks){let twist=false;
     if(!ts.moved&&Math.abs(dx)<12&&Math.abs(dy)<12)tapAt(t.clientX,t.clientY);else if(running&&!paused&&dy>60&&dy>Math.abs(dx)*1.5)drop();ts=null},{passive:false});
   canvas.addEventListener('mousedown',e=>tapAt(e.clientX,e.clientY));
   window.addEventListener('keydown',e=>{if(!running)return;const k=e.key;if(k==='p'||k==='P'){paused=!paused;return}if(paused)return;
-    if(k==='ArrowLeft')move(-1);else if(k==='ArrowRight')move(1);else if(k==='ArrowUp')rotate();else if(k==='ArrowDown')soft();else if(k===' ')drop();else return;e.preventDefault()});
+    if(k==='ArrowLeft')move(-1);else if(k==='ArrowRight')move(1);else if(k==='ArrowUp')rotate();else if(k==='ArrowDown')soft();else if(k===' ')drop();else if(k==='Tab'||k==='s'||k==='S'||k==='Shift'){switchPiece();e.preventDefault();return}else return;e.preventDefault()});
   window.addEventListener('resize',()=>S&&layout());
-  return {CONFIG,start(mode){twist=mode==='twist';S={cash:0,level:1,totalLines:0};running=true;paused=false;parts=[];pops=[];shake=0;startLevel();if(!raf)raf=requestAnimationFrame(loop)},
-    mode:()=>twist?'twist':'classic',state,move,rotate,soft,drop,slideRow,slideCol,_S:()=>S,pause(v){paused=v},setLook,look:()=>look};
+  return {CONFIG,start(mode){twist=mode==='twist';S={cash:0,level:1,totalLines:0,slides:CONFIG.slideStart,slideSetup:false,mate:null};running=true;paused=false;parts=[];pops=[];shake=0;startLevel();if(!raf)raf=requestAnimationFrame(loop)},
+    mode:()=>twist?'twist':'classic',state,move,rotate,soft,drop,slideRow,slideCol,switchPiece,_S:()=>S,pause(v){paused=v},setLook,look:()=>look};
 }
 return {CONFIG,create};
 })();
