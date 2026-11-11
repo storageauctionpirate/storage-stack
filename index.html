@@ -29,7 +29,7 @@ canvas{display:block;margin:0 auto}
   <h2>by Storage Auction Pirate</h2>
   <div class="tag">Tetris meets a Rubik’s cube</div>
   <div class="stickers" aria-hidden="true">
-    <i style="--h:#e85a5a;--s:#C41E3A"></i><i style="--h:#ff9a40;--s:#FF5800"></i><i style="--h:#ffe66a;--s:#FFD500"></i><i style="--h:#3dcc8a;--s:#009E60"></i><i style="--h:#4d8cff;--s:#0051BA"></i>
+    <i style="--h:#ffffff;--s:#EDEAE0"></i><i style="--h:#ffe66a;--s:#FFD500"></i><i style="--h:#e85a5a;--s:#C41E3A"></i><i style="--h:#ff9a40;--s:#FF5800"></i><i style="--h:#4d8cff;--s:#0051BA"></i><i style="--h:#3dcc8a;--s:#009E60"></i>
   </div>
   <div class="best" id="bestLine">BEST  —</div>
   <button class="btn" id="bPlay">CLASSIC</button>
@@ -37,14 +37,15 @@ canvas{display:block;margin:0 auto}
   <button class="btn" id="bHow">HOW TO PLAY</button>
 </div>
 <div id="how" class="scr hide"><h1 style="font-size:28px">HOW TO PLAY</h1>
-<p class="tag" style="max-width:340px">Stack junk like Tetris, then twist rows and columns like a cube to match sticker colors.</p>
+<p class="tag" style="max-width:340px">Stack junk like Tetris. Rotate to flip every sticker to the next cube color at once, then line up matches. Slide rows and columns like a cube.</p>
 <ul>
 <li>Junk rolls in through the <b>garage door</b>. Stack it in the unit.</li>
 <li><b>Match by COLOR</b>, not by item. A red couch ≠ a blue couch.</li>
 <li>Fill a whole row with one color = <b>big payout</b>. Same item type too = bonus.</li>
 <li>4+ same color in a row side by side also clears for small cash.</li>
+<li><b>Rotate (tap / ↑):</b> the shape turns, and <b>every sticker flips to the next cube color at the same time</b> — white › yellow › red › orange › blue › green (then wraps). Use that to pick the color you want to match.</li>
 <li><b>Phone:</b> tap = rotate, swipe ←/→ = move, swipe ↓ = drop. Tap the ◀ ▶ arrows beside a row or ▲ ▼ above/below a column to slide it (wraps around).</li>
-<li><b>TWIST MODE (hard):</b> each item has mixed door colors. Every rotate spins the colors around the item AND moves each one up the cycle red › orange › yellow › green › blue › red. The ↻ TWIST box shows what you'll get. Item pictures stay the same.</li>
+<li><b>TWIST MODE (hard):</b> each item starts with mixed sticker colors. Rotate still flips every sticker to the next cube color at the same time, and turns the shape. The ↻ FLIP box shows what you'll get. Item pictures stay the same.</li>
 <li><b>Keys:</b> ←/→ move, ↑ rotate, ↓ soft drop, Space drop, P pause.</li>
 <li>Clear the goal lines to win the unit. Junk reaching the door = game over.</li></ul>
 <button class="btn" id="bGo">GOT IT</button></div>
@@ -53,8 +54,8 @@ canvas{display:block;margin:0 auto}
 // ===== Storage Stack core module =====
 const StorageStack = (function(){
 const CONFIG = {
-  colors:[{n:'red',h:'#C41E3A'},{n:'green',h:'#009E60'},{n:'blue',h:'#0051BA'},{n:'yellow',h:'#FFD500'},{n:'orange',h:'#FF5800'}],
-  startColors:3,          // colors in level 1; +1 per level up to 5
+  colors:[{n:'white',h:'#EDEAE0'},{n:'yellow',h:'#FFD500'},{n:'red',h:'#C41E3A'},{n:'orange',h:'#FF5800'},{n:'blue',h:'#0051BA'},{n:'green',h:'#009E60'}],
+  startColors:3,          // colors in level 1; +1 per level up to 6
   items:[ // w x h footprint
     {n:'box',e:'📦',w:1,h:1,wt:5},{n:'tv',e:'📺',w:2,h:1,wt:3},{n:'couch',e:'🛋️',w:3,h:1,wt:2},
     {n:'fridge',e:'🧊',w:1,h:2,wt:2},{n:'dresser',e:'🗄️',w:2,h:2,wt:1}],
@@ -64,10 +65,12 @@ const CONFIG = {
   rowClearCash:100, typeBonusMult:2, runMin:4, runCashPerCell:10, levelBonus:250,
   slideCost:0,            // cash per row/col slide (0 = free)
   // TWIST MODE (hard mode): each rotate spins door colors around the piece's cells and advances each one step
-  twistCycle:['red','orange','yellow','green','blue'], // fixed color cycle (wraps)
-  twistRingShift:true,    // colors also rotate one step around the piece's cells
+  cubeCycle:['white','yellow','red','orange','blue','green'], // every rotate advances ALL stickers one step, together
+  twistCycle:['white','yellow','red','orange','blue','green'],
+  twistRingShift:false,   // off: rotate is a simultaneous face-flip, not a ring shuffle
   twistAutoCycleMs:0,     // >0 = falling piece auto-advances colors every N ms (default off)
-  twistSpinMs:220,        // spin animation length
+  twistSpinMs:240,        // flip animation length
+  flipMs:240
 };
 function create(canvas, hooks){let twist=false;
   hooks=hooks||{};
@@ -77,19 +80,20 @@ function create(canvas, hooks){let twist=false;
   function pickItem(){let tot=CONFIG.items.reduce((a,b)=>a+b.wt,0),r=Math.random()*tot;for(let i=0;i<CONFIG.items.length;i++){r-=CONFIG.items[i].wt;if(r<0)return i}return 0}
   function newPiece(){const t=pickItem(),it=CONFIG.items[t],c=Math.floor(Math.random()*S.nColors),cc=[];
     for(let k=0;k<it.w*it.h;k++)cc.push(twist?Math.floor(Math.random()*S.nColors):c);return {t,c,cc,w:it.w,h:it.h,rot:0,x:0,y:0}}
-  function cyc(){return CONFIG.twistCycle.map(n=>CONFIG.colors.findIndex(c=>c.n===n)).filter(i=>i>=0&&i<S.nColors)}
+  function cyc(){const seq=CONFIG.cubeCycle||CONFIG.twistCycle;return seq.map(n=>CONFIG.colors.findIndex(c=>c.n===n)).filter(i=>i>=0&&i<S.nColors)}
   function adv(c){const o=cyc(),i=o.indexOf(c);return i<0?c:o[(i+1)%o.length]}
   function ring(w,h){const r=[];for(let i=0;i<w;i++)r.push(i);for(let j=1;j<h;j++)r.push(j*w+w-1);if(h>1)for(let i=w-2;i>=0;i--)r.push((h-1)*w+i);if(w>1)for(let j=h-2;j>0;j--)r.push(j*w);return r}
-  // colors after a twist: geometric rotate (if shape turns), ring shift, then advance in cycle
-  function twistColors(cc,w,h,turn){let n=cc.slice(),nw=w,nh=h;
-    if(turn){nw=h;nh=w;n=[];for(let j=0;j<nh;j++)for(let i=0;i<nw;i++)n.push(cc[(h-1-i)*w+j])}
-    if(CONFIG.twistRingShift&&n.length>1){const r=ring(nw,nh),o=n.slice();r.forEach((k,q)=>{n[r[(q+1)%r.length]]=o[k]})}
-    return n.map(adv)}
-  function doTwist(p,turn){p.cc=twistColors(p.cc,p.w,p.h,turn);p.spin=performance.now();if(turn){const t=p.w;p.w=p.h;p.h=t;p.rot^=1}}
+  // 90° turn of the sticker map (shape only). Colors are advanced separately so every cell flips together.
+  function remapTurn(cc,w,h){const n=[];for(let j=0;j<w;j++)for(let i=0;i<h;i++)n.push(cc[(h-1-i)*w+j]);return n}
+  function flipPiece(p,turn){if(turn){p.cc=remapTurn(p.cc,p.w,p.h);const t=p.w;p.w=p.h;p.h=t;p.rot^=1}p.prevCc=p.cc.slice();p.cc=p.cc.map(adv);p.c=p.cc[0];p.spin=performance.now()}
+  function previewFlip(p){const turn=p.w!==p.h&&[0,-1,1,-2,2].some(k=>fits(p,p.x+k,p.y,p.h,p.w));let cc=p.cc.slice(),w=p.w,h=p.h;if(turn){cc=remapTurn(cc,w,h);const t=w;w=h;h=t}return {cc:cc.map(adv),w,h}}
+  // kept for any leftover callers
+  function twistColors(cc,w,h,turn){let n=turn?remapTurn(cc,w,h):cc.slice();return n.map(adv)}
+  function doTwist(p,turn){flipPiece(p,turn)}
   function startLevel(){
     const u=CONFIG.units[Math.floor(Math.random()*CONFIG.units.length)];
     S.unit=u; W=u.w; H=u.h; S.grid=Array.from({length:H},()=>Array(W).fill(null));
-    S.lines=0; S.nColors=Math.min(5,CONFIG.startColors+S.level-1);
+    S.lines=0; S.nColors=Math.min(CONFIG.colors.length,CONFIG.startColors+S.level-1);
     S.next=newPiece(); spawn(); layout(); msg={t:'UNIT '+u.label+' — LEVEL '+S.level,until:performance.now()+1800};
   }
   function fallMs(){return Math.max(CONFIG.minFallMs,CONFIG.startFallMs-S.totalLines*CONFIG.speedupPerLine-(S.level-1)*CONFIG.speedupPerLevel)}
@@ -117,7 +121,7 @@ function create(canvas, hooks){let twist=false;
   function state(){return {cash:S.cash,level:S.level,lines:S.lines,totalLines:S.totalLines,unit:S.unit&&S.unit.label}}
   // actions
   function move(dx){const p=S.cur;if(p&&fits(p,p.x+dx,p.y,p.w,p.h))p.x+=dx}
-  function rotate(){const p=S.cur;if(!p)return;if(p.w===p.h){if(twist)doTwist(p,false);return}const w=p.h,h=p.w;for(const k of[0,-1,1,-2,2]){if(fits(p,p.x+k,p.y,w,h)){p.x+=k;if(twist)doTwist(p,true);else{p.w=w;p.h=h;p.rot^=1}return}}}
+  function rotate(){const p=S.cur;if(!p)return;if(p.w===p.h){flipPiece(p,false);return}const w=p.h,h=p.w;for(const k of[0,-1,1,-2,2]){if(fits(p,p.x+k,p.y,w,h)){p.x+=k;flipPiece(p,true);return}}flipPiece(p,false)}
   function soft(){const p=S.cur;if(!p)return;if(fits(p,p.x,p.y+1,p.w,p.h))p.y++;else lock();acc=0}
   function drop(){const p=S.cur;if(!p)return;while(fits(p,p.x,p.y+1,p.w,p.h))p.y++;if(p)p.fy=p.y;lock();acc=0}
   function slideRow(y,d){if(y<0||y>=H)return;const r=S.grid[y];if(d>0)r.unshift(r.pop());else r.push(r.shift());S.cash-=CONFIG.slideCost;gravity();resolve();bumpCur()}
@@ -131,13 +135,13 @@ function create(canvas, hooks){let twist=false;
   function ensurePat(){if(bgPat)return;const c=document.createElement('canvas');c.width=48;c.height=48;const g=c.getContext('2d');g.fillStyle='#2a221c';g.fillRect(0,0,48,48);for(let i=0;i<90;i++){g.fillStyle='rgba('+(20+((i*37)%40))+','+(16+((i*19)%30))+','+(12+((i*13)%24))+','+.11+')';g.fillRect((i*17)%48,(i*11)%48,1+i%3,1+i%2)}bgPat=ctx.createPattern(c,'repeat');
     const w=document.createElement('canvas');w.width=16;w.height=32;const wg=w.getContext('2d');wg.fillStyle='#8a8f94';wg.fillRect(0,0,16,32);wg.fillStyle='rgba(255,255,255,.2)';wg.fillRect(0,0,5,32);wg.fillStyle='rgba(0,0,0,.22)';wg.fillRect(8,0,4,32);wallPat=ctx.createPattern(w,'repeat')}
   function corrugated(x,y,w,h){ensurePat();ctx.fillStyle=wallPat||'#8d9196';ctx.fillRect(x,y,w,h);ctx.fillStyle='rgba(0,0,0,.25)';ctx.fillRect(x,y,w,3);ctx.fillRect(x,y+h-3,w,3)}
-  function drawSticker(c,x,y,cs,a){ctx.globalAlpha=a||1;const g=Math.max(1.5,cs*0.07),r=Math.max(3,cs*0.14),col=CONFIG.colors[c].h;
+  function drawSticker(c,x,y,cs,a){ctx.globalAlpha=a||1;const g=Math.max(1.5,cs*0.07),r=Math.max(3,cs*0.14),nm=CONFIG.colors[c].n,col=CONFIG.colors[c].h,light=nm==='white'||nm==='yellow';
     ctx.fillStyle='#141414';rr(x,y,cs,cs,r*.45);ctx.fill();
     const ix=x+g,iy=y+g,iw=cs-g*2,ih=cs-g*2;const grd=ctx.createLinearGradient(ix,iy,ix+iw,iy+ih);
     grd.addColorStop(0,shade(col,55));grd.addColorStop(.4,col);grd.addColorStop(1,shade(col,-40));
     ctx.fillStyle=grd;rr(ix,iy,iw,ih,r);ctx.fill();
     ctx.fillStyle='rgba(255,255,255,.42)';rr(ix+1.5,iy+1.5,iw*.62,ih*.28,r*.5);ctx.fill();
-    ctx.strokeStyle='rgba(0,0,0,.4)';ctx.lineWidth=Math.max(1,cs*0.04);rr(ix,iy,iw,ih,r);ctx.stroke();
+    ctx.strokeStyle=light?'rgba(0,0,0,.55)':'rgba(0,0,0,.4)';ctx.lineWidth=Math.max(1,cs*(light?0.055:0.04));rr(ix,iy,iw,ih,r);ctx.stroke();
     ctx.strokeStyle='rgba(255,255,255,.15)';ctx.lineWidth=1;rr(ix+1,iy+1,iw-2,ih-2,Math.max(2,r-1));ctx.stroke();
     ctx.globalAlpha=1}
   function drawPiece(t,cc,x,y,cols,rows,cs,a){const colors=Array.isArray(cc)?cc:Array(cols*rows).fill(cc);
@@ -145,10 +149,11 @@ function create(canvas, hooks){let twist=false;
     ctx.globalAlpha=a||1;ctx.font=Math.floor(Math.min(cols,rows)*cs*.58)+'px serif';ctx.textAlign='center';ctx.textBaseline='middle';
     ctx.shadowColor='rgba(0,0,0,.55)';ctx.shadowBlur=4;ctx.fillText(CONFIG.items[t].e,x+cols*cs/2,y+rows*cs/2+1);ctx.shadowBlur=0;ctx.globalAlpha=1}
   function drawItem(t,c,x,y,w,h,a){const cs=(!w||!h)?cell:(w<=32||h<=32?Math.min(w,h):cell);const cols=Math.max(1,Math.round(w/cs)||1),rows=Math.max(1,Math.round(h/cs)||1);drawPiece(t,c,x,y,cols,rows,w/cols,a)}
-  function drawTwist(p,x,y,cs,now){const W2=p.w*cs,H2=p.h*cs,e=now-(p.spin||-1e9),sp=CONFIG.twistSpinMs;ctx.save();
-    if(e<sp){const k=e/sp;ctx.translate(x+W2/2,y+H2/2);ctx.rotate((1-k)*(1-k)*-Math.PI/2);const s=1+.18*Math.sin(k*Math.PI);ctx.scale(s,s);ctx.translate(-x-W2/2,-y-H2/2)}
-    drawPiece(p.t,p.cc,x,y,p.w,p.h,cs,1);
-    if(e<sp){ctx.fillStyle='rgba(255,255,255,'+(.6*(1-e/sp))+')';rr(x,y,W2,H2,6);ctx.fill()}
+  function drawTwist(p,x,y,cs,now){const W2=p.w*cs,H2=p.h*cs,e=now-(p.spin||-1e9),sp=CONFIG.flipMs||CONFIG.twistSpinMs||240;ctx.save();
+    let cc=p.cc;
+    if(e<sp){const k=Math.max(0,Math.min(1,e/sp));ctx.translate(x+W2/2,y+H2/2);ctx.scale(Math.max(.08,Math.abs(Math.cos(k*Math.PI))),1+.06*Math.sin(k*Math.PI));ctx.translate(-x-W2/2,-y-H2/2);if(k<.5&&p.prevCc)cc=p.prevCc}
+    drawPiece(p.t,cc,x,y,p.w,p.h,cs,1);
+    if(e<sp){const k=Math.max(0,Math.min(1,e/sp));ctx.fillStyle='rgba(255,255,255,'+(0.55*Math.sin(k*Math.PI))+')';rr(x,y,W2,H2,6);ctx.fill()}
     ctx.restore()}
   function rr(x,y,w,h,r){ctx.beginPath();ctx.roundRect?ctx.roundRect(x,y,w,h,r):ctx.rect(x,y,w,h)}
   function arrows(){const a=[];const s=Math.min(30,cell);for(let y=0;y<H;y++){const cy=oy+y*cell+cell/2;a.push({x:ox-s-2,y:cy-s/2,w:s,h:s,k:'r',i:y,d:-1,g:'◀'},{x:ox+W*cell+2,y:cy-s/2,w:s,h:s,k:'r',i:y,d:1,g:'▶'})}
@@ -180,7 +185,7 @@ function create(canvas, hooks){let twist=false;
     // grid stickers
     for(let y=0;y<H;y++)for(let x=0;x<W;x++){const g=S.grid[y][x];if(g)drawPiece(g.t,g.c,ox+x*cell,oy+y*cell,1,1,cell)}
     const p=S.cur;if(p){if(p.fx==null)p.fx=p.x;if(p.fy==null)p.fy=p.y;p.fx+=(p.x-p.fx)*.55;p.fy+=(p.y-p.fy)*.55;if(Math.abs(p.fx-p.x)<.02)p.fx=p.x;if(Math.abs(p.fy-p.y)<.02)p.fy=p.y;
-      ctx.save();ctx.beginPath();ctx.rect(ox,oy-10,W*cell,H*cell+10);ctx.clip();if(twist)drawTwist(p,ox+p.fx*cell,oy+p.fy*cell,cell,now);else drawPiece(p.t,p.cc,ox+p.fx*cell,oy+p.fy*cell,p.w,p.h,cell,1);ctx.restore()}
+      ctx.save();ctx.beginPath();ctx.rect(ox,oy-10,W*cell,H*cell+10);ctx.clip();drawTwist(p,ox+p.fx*cell,oy+p.fy*cell,cell,now);ctx.restore()}
     flash=flash.filter(f=>now-f.t<280);flash.forEach(f=>{const k=1-(now-f.t)/280,col=CONFIG.colors[f.c]?CONFIG.colors[f.c].h:'#fff';ctx.globalAlpha=k;ctx.fillStyle='#fff8d0';ctx.fillRect(ox+f.x*cell,oy+f.y*cell,cell,cell);ctx.strokeStyle=col;ctx.lineWidth=3;ctx.strokeRect(ox+f.x*cell+2,oy+f.y*cell+2,cell-4,cell-4);ctx.globalAlpha=1});
     // particles
     const pdt=dt/1000;parts=parts.filter(q=>{q.t+=pdt;q.x+=q.vx*pdt;q.y+=q.vy*pdt;q.vy+=220*pdt;if(q.t>=q.life)return false;ctx.globalAlpha=1-q.t/q.life;ctx.fillStyle=q.c;ctx.fillRect(q.x-q.r/2,q.y-q.r/2,q.r,q.r);ctx.globalAlpha=1;return true});
@@ -192,10 +197,10 @@ function create(canvas, hooks){let twist=false;
     ctx.strokeStyle='#e8d48a';ctx.setLineDash([14,10]);ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(0,sy+70);ctx.lineTo(vw,sy+70);ctx.stroke();ctx.setLineDash([]);
     ctx.fillStyle='#ffd23f';ctx.font='800 13px system-ui';ctx.textAlign='left';ctx.fillText('NEXT UP THE DRIVEWAY ➜',10,sy+16);
     const n=S.next,ns=22,bob=Math.sin(now/200)*2;ctx.font='34px serif';ctx.fillText('🛻',vw-100+bob,sy+44);if(twist)drawTwist(n,vw-150-n.w*ns,sy+52-n.h*ns,ns,now);else drawPiece(n.t,n.cc,vw-150-n.w*ns,sy+52-n.h*ns,n.w,n.h,ns,1);
-    if(twist&&p){const turn=p.w!==p.h&&[0,-1,1,-2,2].some(k=>fits(p,p.x+k,p.y,p.h,p.w)),nc=twistColors(p.cc,p.w,p.h,turn),nw=turn?p.h:p.w,nh=turn?p.w:p.h,ms=11,px=vw-10-nw*ms,py=60;
-      ctx.fillStyle='rgba(0,0,0,.62)';rr(px-62,py-4,nw*ms+68,nh*ms+8,6);ctx.fill();ctx.fillStyle='#ffd23f';ctx.font='800 11px system-ui';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText('↻ TWIST ➜',px-58,py+nh*ms/2);
+    if(p){const pv=previewFlip(p),nc=pv.cc,nw=pv.w,nh=pv.h,ms=11,px=vw-10-nw*ms,py=60;
+      ctx.fillStyle='rgba(0,0,0,.62)';rr(px-62,py-4,nw*ms+68,nh*ms+8,6);ctx.fill();ctx.fillStyle='#ffd23f';ctx.font='800 11px system-ui';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText('↻ FLIP ➜',px-58,py+nh*ms/2);
       for(let j=0;j<nh;j++)for(let i=0;i<nw;i++)drawSticker(nc[j*nw+i],px+i*ms,py+j*ms,ms,1)}
-    ctx.fillStyle='#f4e3c3';ctx.font='12px system-ui';ctx.textAlign='left';ctx.textBaseline='alphabetic';ctx.fillText((twist?'mixed':CONFIG.colors[n.c].n)+' '+CONFIG.items[n.t].n,10,sy+36);if(twist){const o=cyc();ctx.font='800 11px system-ui';ctx.fillText('TWIST:',10,sy+56);o.forEach((c,i)=>{drawSticker(c,56+i*22,sy+46,16,1);ctx.fillStyle='#f4e3c3';if(i<o.length-1)ctx.fillText('›',74+i*22,sy+58)})}
+    ctx.fillStyle='#f4e3c3';ctx.font='12px system-ui';ctx.textAlign='left';ctx.textBaseline='alphabetic';ctx.fillText((twist?'mixed':CONFIG.colors[n.c].n)+' '+CONFIG.items[n.t].n,10,sy+36);{const o=cyc();ctx.font='800 11px system-ui';ctx.fillStyle='#f4e3c3';ctx.fillText('FLIP:',10,sy+56);o.forEach((c,i)=>{drawSticker(c,52+i*20,sy+46,15,1);ctx.fillStyle='#f4e3c3';if(i<o.length-1)ctx.fillText('›',68+i*20,sy+58)})}
     if(msg&&now<msg.until){ctx.fillStyle='rgba(0,0,0,.65)';ctx.fillRect(0,oy+H*cell/2-24,vw,48);ctx.fillStyle='#ffd23f';ctx.font='800 22px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(msg.t,vw/2,oy+H*cell/2)}
     if(sh>0)ctx.restore();
   }
