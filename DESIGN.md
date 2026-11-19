@@ -1,4 +1,6 @@
 # Storage Stack — DESIGN (rough draft v0.1)
+Live web demo (Pirate Arcade 1.1.2): https://storageauctionpirate.github.io/storage-stack/
+
 By Storage Auction Pirate. Single `index.html`, vanilla JS. Core = `StorageStack` module (`CONFIG` at top, `StorageStack.create(canvas, {onUpdate,onGameOver})` returns `{start, move, rotate, soft, drop, slideRow, slideCol, state, pause}`) so it can be embedded as a mini-game.
 
 ## Rules
